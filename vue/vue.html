@@ -1,0 +1,1261 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Document</title>
+  </head>
+
+  <body>
+    <div id="app"></div>
+  </body>
+
+  <style>
+    .transition-enter-from,
+    .transition-leave-to {
+      opacity: 0;
+      transition: opacity 0.5s ease-in-out;
+    }
+  </style>
+
+  <script type="module">
+    import {
+      reactive,
+      ref,
+      effect,
+      shallowReactive,
+      shallowRef,
+    } from "https://unpkg.com/@vue/reactivity@3/dist/reactivity.esm-browser.js";
+
+    // 创建渲染器
+    // 将浏览器的专用方法和属性，作为渲染器的参数传递。后面需要实现跨平台渲染
+    function createRenderer(options) {
+      const {
+        createElement,
+        setElementText,
+        insert,
+        createTextNode,
+        createCommentNode,
+        setText,
+      } = options;
+
+      function shouldSetsProps(el, key, value) {
+        // 特殊处理
+        if (key === "form" && el.tagName === "INPUT") {
+          return false;
+        }
+        // 使用in操作符判断key是否存在对应的DOM Properties，避免设置不存在的属性
+        return key in el;
+      }
+
+      // 挂载操作
+      function mountElement(vnode, container) {
+        // 创建真实dom元素,让真实dom和vnode关联起来。好调用真实dom的方法
+        const el = (vnode.el = createElement(vnode.type));
+        // 处理子节点
+        if (typeof vnode.children === "string") {
+          setElementText(el, vnode.children);
+          //   如果是数组，则遍历每个数组
+        } else if (Array.isArray(vnode.children)) {
+          vnode.children.forEach((child) => {
+            patch(null, child, el);
+          });
+        }
+
+        if (vnode.props) {
+          for (const key in vnode.props) {
+            // 获取该DOM Properties的值
+            const value = vnode.props[key];
+            patchProps(el, key, null, value);
+          }
+        }
+
+        // 判断vnode是不是需要过度
+        const needTransition = vnode.transition;
+        if (needTransition) {
+          vnode.transition.beforeEnter(el);
+        }
+
+        insert(el, container);
+        if (needTransition) {
+          vnode.transition.enter(el);
+        }
+      }
+
+      function unmount(vnode) {
+        // 根据vnode获取真实DOM元素
+        const el = vnode.el;
+
+        // 如果是Fragment组件节点，循环卸载所有的子组件
+        if (vnode.type === Fragment) {
+          vnode.children.forEach((child) => {
+            unmount(child);
+          });
+        } else if (typeof vnode.type === "object") {
+          // 注释节点
+          // 如果vnode.keepAlive 是一个boolean值 ， 用来标识该组件是否应该被keepAlive
+
+          if (vnode.keepAlive) {
+            vnode.keepAliveInstance._deActive(vnode);
+          }
+
+          unmount(vnode.component.subtree);
+        }
+
+        // 获取el的父元素
+        const parent = el.parentNode;
+        // 从父元素中移除el
+
+        // 判断vnode是不是需要过度
+        const needTransition = vnode.transition;
+
+        if (parent) {
+          const performRemove = () => {
+            parent.removeChild(el);
+          };
+
+          if (needTransition) {
+            vnode.transition.beforeLeave(el, performRemove);
+          } else {
+            performRemove();
+          }
+        }
+      }
+
+      function updateElement(oldVnode, newVnode) {
+        // 更新真实dom元素的属性
+        // for(const key in newVnode.props){
+        //     oldVnode.props[key] = newVnode.props[key];
+        // }
+      }
+      // oldVnode 旧的vnode，newVnode 新的vnode，container 挂载的容器
+      function patch(oldVnode, newVnode, container, abchor) {
+        // 如果旧node的type和新node的type不相同，则直接卸载旧node。
+        if (oldVnode && oldVnode.type !== newVnode.type) {
+          unmount(oldVnode);
+          oldVnode = null;
+        }
+        const { type } = newVnode;
+
+        // 如果新node的types是字符串类型，说明是普通标签元素
+        if (typeof type === "string") {
+          if (!oldVnode) {
+            // 如果旧node不存在说明是挂在操作
+            mountElement(newVnode, container);
+          } else {
+            updateElement(oldVnode, newVnode);
+          }
+        } else if (typeof type === "object" || typeof type === "function") {
+          // 如果没有旧node，说明是挂载操作，直接创建新的node
+          if (!oldVnode) {
+            if (oldVnode?.keepAlive) {
+              oldVnode.keepAliveInstance._active(oldVnode); // 直接激活旧组件
+            } else {
+              // 如果不是keepAlive组件，说明是普通组件，直接挂载
+              mountComponet(newVnode, container, abchor);
+            }
+          } else {
+            patchComponet(oldVnode, newVnode);
+          }
+        } else if (typeof type === "object" && type._isTeleport) {
+          // 如果选项中有_isTeleport属性，说明是Teleport组件
+          // 调用Teleport组件中的process 函数 将控制权交出去
+          // 传递给Teleport组件的process函数第个参数 是函数内部的一些方法
+
+          type.process(oldVnode, newVnode, container, abchor, {
+            patch,
+            patchChildren,
+            unmount,
+            move(vnode, container, ancestor) {
+              insert(
+                vnode.component ? vnode.component.subtree.el : vnode.el,
+                container,
+                anchor,
+              );
+            },
+          });
+
+          // mountTeleport(newVnode, container);
+        } else if (type === Comment) {
+          // 注释节点
+          if (!oldVnode) {
+            const el = (newVnode.el = createCommentNode(newVnode.children));
+            insert(el, container);
+          } else {
+            const el = (newVnode.el = oldVnode.el);
+            if (newVnode.children !== oldVnode.children) {
+              setText(el, newVnode.children);
+            }
+          }
+        } else if (type === Text) {
+          // 文本节点
+          if (!oldVnode) {
+            // 如果旧node不存在说明是挂在操作，使用createTextNode创建文本节点
+            const el = (newVnode.el = createTextNode(newVnode.children));
+            insert(el, container);
+          } else {
+            // 如果有旧node，说明是更新操作，需要用新的node更新旧node
+            const el = (newVnode.el = oldVnode.el);
+
+            if (newVnode.children !== oldVnode.children) {
+              // nodeValue是DOM节点（Node）上的一个通用属性---所有节点都有，包括文本节点
+              // 在文本节点上，nodeValue就是文本内容
+              // 在注释节点上，nodeValue就是注释内容
+              // 元素节点是null 无效
+              setText(el, newVnode.children);
+            }
+          }
+        } else if (type === Fragment) {
+          // Fragment组件节点
+          if (!oldVnode) {
+            // 如果旧node不存在说明是挂在操作
+            newVnode.children.forEach((child) => {
+              patch(null, child, container);
+            });
+          } else {
+            // 如果有旧node，说明是更新操作，需要用新的node更新旧node
+            patchChildren(oldVnode, newVnode, container);
+          }
+        }
+      }
+
+      const queue = new Set();
+      let isFlushing = false;
+      // 创建一个立即response 的 Promise函数
+      const p = Promise.resolve();
+      function queueJob(job) {
+        // 将job添加到队列中
+        queue.add(job);
+        // 如果队列为空，说明是第一个job，需要触发刷新
+
+        if (!isFlushing) {
+          // 改为true，防止重复刷新
+          isFlushing = true;
+          p.then(() => {
+            // 执行队列中的所有job
+            queue.forEach((job) => {
+              return job();
+            });
+            queue.clear();
+            isFlushing = false;
+          });
+        }
+      }
+
+      // 解析 props
+      function resolveProps(options, propsData) {
+        options = options || {};
+        const props = {};
+        const attrs = {};
+        // 遍历组件传递的 props 数据
+        for (const key in propsData) {
+          // 以字符串 "on" 开头的props，视为事件属性,都将其添加到props中
+          // 如果组件传递的props 数据在自身的 props 选项中定义，则将其视为合法 props
+          if (key in options || key.startsWith("on")) {
+            props[key] = propsData[key];
+          } else {
+            attrs[key] = propsData[key];
+          }
+        }
+        return [props, attrs];
+      }
+
+      // 挂载组件
+      function mountComponet(vnode, container, abchor) {
+        // 检测是不是函数组件
+        const isFunciton = typeof vnode.type === "function";
+
+        // 获取 vnode 选项对象
+        let componentOptions = vnode.type;
+
+        if (isFunciton) {
+          // 如果是函数组件，直接调用函数，返回渲染函数
+          // render = componentOptions(vnode.props);
+          componentOptions = {
+            render: vnode.type,
+            props: vnode.type.props,
+          };
+
+          console.log("componentOptions", componentOptions);
+        }
+        let {
+          render, // 是函数或者对象
+          data,
+          beforeCreated,
+          beforeMount,
+          mounted,
+          updated,
+          created,
+          beforeUnmount,
+          props: propsOptions, // 父组件传入的 props 选项对象
+          setup,
+        } = componentOptions;
+
+        // 执行beforeMount函数, 没办法获取 data 的值
+        beforeCreated && beforeCreated();
+
+        const state = reactive(data ? data() : {});
+
+        const [props, attrs] = resolveProps(propsOptions, vnode.props);
+
+        //  直接使用编译好的vnode.children作为 slots 的对象
+        const slots = vnode.children || {};
+
+        // 定义组件实例，本质就是一个对象，它包含与组件有关的状态信
+        let instance = {
+          render,
+          // 组件实例的状态数据，data
+          state,
+          props: shallowReactive(props), // 浅响应
+          isMounted: false, // 组件是否挂载
+          // 组件实际渲染的内容，子树
+          subTree: null,
+          slots,
+          mounted: [],
+          onunmounted: [],
+          keepAliveCtx: null, // keepAlive组件的上下文对象
+        };
+
+        // 检测组件是否是keepAlive组件
+        const isKeepAlive = vnode.type._isKeepAlive;
+
+        if (isKeepAlive) {
+          // 在keepAlive组件中，需要将组件实例添加到keepAliveCtx中
+          instance.keepAliveCtx = {
+            // move函数 用来移动vnode
+            move(vnode, container, abchor) {
+              // 本质是将组件移动隐藏容器中
+              insert(vnode.component.subTree.el, container, abchor);
+            },
+            createElement,
+          };
+        }
+
+        // 定义 emit 函数，接收两个参数
+        // event： 事件名称
+        // payload: 事件参数
+
+        function emit(event, ...payload) {
+          const eventName = `on${event[0].toUpperCase() + event.slice(1)}`;
+          // 根据事件名称获取事件处理函数
+          // 如果事件处理函数存在，调用它
+          const handler = instance.props[eventName];
+          if (handler) {
+            handler(...payload);
+          } else {
+            console.warn(`组件实例${instance}中不存在事件${eventName}`);
+          }
+        }
+
+        vnode.component = instance;
+
+        const setupContext = {
+          attrs,
+          emit,
+          slots,
+        };
+
+        setCurrentInstance(instance);
+
+        let setupResult = setup
+          ? setup(shallowReactive(instance.props), setupContext)
+          : null;
+
+        console.log("setupResult", setupResult);
+
+        // setup执行完成后，将currentInstance设置为null，避免后续操作中使用错误的实例
+        setCurrentInstance(null);
+
+        let setupState = null;
+        if (typeof setupResult === "function") {
+          if (render) {
+            console.error("setup 是一个函数，render 选项将被忽略");
+          }
+          render = setupResult; //如果setupResult是一个函数，就将它赋值给render
+        } else {
+          setupState = setupResult;
+        }
+
+        // console.log("instance", instance);
+
+        // 创建渲染上下文对象
+        const renderContext = new Proxy(instance, {
+          get(target, key) {
+            const { props, state, slots } = target;
+            if (key === "$slots") {
+              return slots;
+            }
+
+            if (state && key in state) {
+              return state[key];
+            } else if (props && key in props) {
+              return props[key];
+            } else {
+              console.warn(`组件实例${instance}中不存在属性${key}`);
+            }
+          },
+          set(target, key, value) {
+            const { props, state } = target;
+            if (state && key in state) {
+              state[key] = value;
+            } else if (props && key in props) {
+              props[key] = value;
+            } else {
+              console.warn(`组件实例${instance}中不存在属性${key}`);
+            }
+          },
+        });
+        // created可以获取 data 的值,还有props的值
+
+        created && created.call(renderContext);
+
+        const updateFn = () => {
+          // 将render函数的this指向state，这样可以获取 data 的值
+          const subTree = render.call(renderContext, renderContext);
+          // 检测组件是否被挂载
+          if (!instance.isMounted) {
+            // 执行beforeMount函数,
+            beforeMount && beforeMount.call(renderContext);
+
+            instance.isMounted = true;
+            patch(null, subTree, container, abchor);
+
+            // mounted可以获取 data 的值
+            instance.mounted &&
+              instance.mounted.forEach((fn) => fn.call(renderContext));
+          } else {
+            // beforeUpdate && beforeUpdate.call(renderContext);
+            // 使用第一次 subTree 作为上一次的子树，更新子树
+            patch(instance.subTree, subTree, container, abchor);
+            // updated可以获取 data 的值
+            updated && updated.call(state);
+          }
+          // 将这次的子树赋值给上一次的子树，方便下次更新
+          instance.subTree = subTree;
+        };
+
+        effect(updateFn, {
+          scheduler: () => queueJob(updateFn),
+        });
+      }
+
+      // 专门更新同类型元素的更新，核心就是更新props + children
+      function patchElement(newVal, oldVal) {
+        const el = (newVal.el = oldVal.el);
+        const oldProps = oldVal.props;
+        const newProps = newVal.props;
+
+        // 第一步更新props
+        for (const key in newProps) {
+          const value = newProps[key];
+          patchProps(el, key, oldProps[key], value);
+        }
+
+        for (const key in oldProps) {
+          if (!(key in newProps)) {
+            patchProps(el, key, oldProps[key], null);
+          }
+        }
+
+        patchChildren(newVal, oldVal, el);
+      }
+
+      function patchChildren(newVal, oldVal, el) {
+        // 判断子节点是否是字符串类型
+        if (typeof newVal.children === "string") {
+          // 旧子节点有三种情况，没有子节点，有子节点，子节点是数组
+          // 只有当旧子节点为一组子节点的时候，才需要逐个卸载，其他情况都不需要
+          if (Array.isArray(oldVal.children)) {
+            oldVal.children.forEach((child) => {
+              unmount(child);
+            });
+          }
+          setElementText(el, newVal.children);
+        } else if (Array.isArray(newVal.children)) {
+          if (Array.isArray(oldVal.children)) {
+            // 简单 Diff 算法
+            const newChildren = newVal.children;
+            const oldChildren = oldVal.children;
+            // lastIndex 记录「在旧节点中已匹配到的最大索引」
+            let lastIndex = 0;
+
+            // 遍历新的 children
+            for (let i = 0; i < newChildren.length; i++) {
+              const newChild = newChildren[i];
+              // 是否在旧节点中找到可复用的节点
+              let find = false;
+
+              for (let j = 0; j < oldChildren.length; j++) {
+                const oldChild = oldChildren[j];
+                if (oldChild.key === newChild.key) {
+                  find = true;
+                  // 找到可复用节点，更新内容
+                  patch(oldChild, newChild, el);
+
+                  // j < lastIndex 说明该节点在旧列表中位置靠前，
+                  // 但在新列表中排在后面 → 顺序变了，需要移动
+                  if (j < lastIndex) {
+                    // 获取前一个「新」节点
+                    const prevNode = newChildren[i - 1];
+                    if (prevNode) {
+                      // 以 prevNode 的下一个兄弟节点作为锚点，把节点插到锚点前
+                      const anchor = prevNode.el.nextSibling;
+                      insert(newChild.el, el, anchor);
+                    }
+                  } else {
+                    lastIndex = j;
+                  }
+                  break;
+                }
+              }
+
+              // 旧节点中找不到 → 是新增节点
+              if (!find) {
+                const prevNode = newChildren[i - 1];
+                // 获取新增节点的锚点
+                const anchor = prevNode
+                  ? prevNode.el.nextSibling
+                  : el.firstChild;
+                // 先挂载节点（追加到末尾）
+                patch(null, newChild, el);
+                // 再把它插入到锚点前面
+                insert(newChild.el, el, anchor);
+              }
+            }
+
+            // 遍历旧节点，把「新节点中不存在」的旧节点卸载
+            for (let i = 0; i < oldChildren.length; i++) {
+              const oldChild = oldChildren[i];
+              const has = newChildren.some(
+                (child) => child.key === oldChild.key,
+              );
+              if (!has) {
+                unmount(oldChild);
+              }
+            }
+          } else {
+            setElementText(el, "");
+            newVal.children.forEach((child) => {
+              patch(null, child, el);
+            });
+          }
+        } else {
+          //    说明新子节点不存在
+          // 说明旧子节点存在，需要卸载旧子节点
+          if (Array.isArray(oldVal.children)) {
+            oldVal.children.forEach((child) => {
+              unmount(child);
+            });
+          } else if (typeof oldVal.children === "string") {
+            setElementText(el, "");
+          }
+        }
+      }
+
+      function patchProps(el, key, prevValue, nextValue) {
+        // 以on开头的属性，是事件属性
+        if (key.startsWith("on")) {
+          // 获取该事件的伪造处理函数invoker，用来做个代理就不需要先卸载事件在添加
+          // vei 是 vue event invoker的缩写
+          let invokers = el._vei || (el._vei = {});
+          // 根据key获取对应的invoker
+          let invoker = invokers?.[key];
+
+          // 根据事件名，得到对应的事件名称
+          const eventName = key.slice(2).toLowerCase();
+          if (nextValue) {
+            if (!invoker) {
+              invoker = el._vei = (e) => {
+                // e.timeStamp 事件触发的时间戳
+                // 如果事件触发时间在绑定事件后面就不执行事件处理函数
+                if (e.timeStamp < invoker.attached) {
+                  return;
+                }
+                // 如果invoker是数组，需要遍历它并且逐个调用事件处理函数
+                if (Array.isArray(invoker.value)) {
+                  invoker.value.forEach((handler) => {
+                    handler(e);
+                  });
+                } else {
+                  invoker.value(e);
+                }
+              };
+              invoker.value = nextValue;
+              // 添加attached属性，记录记录绑定事件的时间戳
+              invoker.attached = performance.now();
+              // 绑定invoker，作为事件处理函数
+              el.addEventListener(eventName, invoker);
+            } else {
+              // 更新的时候只需要替换invoker的value即可
+              invoker.value = nextValue;
+            }
+          } else if (invoker) {
+            // 新的事件处理函数不存在，但是之前绑定的invoker存在，则移除绑定
+            el.removeEventListener(eventName, invoker);
+          }
+        } else if (key === "class") {
+          el.className = nextValue || "";
+        } else if (shouldSetsProps(el, key, nextValue)) {
+          // shouldSetsProps 判断是否可以设置属性值，是不是只读属性
+          const type = typeof el[key];
+          // 如果DOM的Property是boolean 且vnode的属性值为空字符串，则将值较正为true
+          if (type === "boolean" && nextValue === "") {
+            el[key] = true;
+          } else {
+            el[key] = nextValue;
+          }
+        } else {
+          // 如果设置的属性不在DOM的Property中，则使用setAttribute方法设置属性
+          el.setAttribute(key, nextValue);
+        }
+      }
+
+      function patchComponet(oldVnode, newVnode, el) {
+        const instance = (newVnode.component = oldVnode.component);
+        // 获取当前的 props 数据
+        const { props } = instance.props;
+        // 检查 props 数据是否发生了变化
+        if (hasPropsChanged(oldVnode.props, newVnode.props)) {
+          // 说明 props 数据发生了变化，需要更新 props 数据
+          // instance.props = props;
+
+          const [nextProps] = resolveProps(newVnode.props, oldVnode.props);
+
+          // 更新props
+          for (let key in nextProps) {
+            props[key] = nextProps[key];
+            // patchProps(el, key, props[key], nextProps[key]);
+          }
+
+          //删除不存在的属性
+          for (let key in props) {
+            if (!nextProps[key]) {
+              delete props[key];
+            }
+          }
+        }
+      }
+
+      function hasPropsChanged(prevProps, nextProps) {
+        // 检查 props 数据是否发生了变化
+        // 组件可能没有 props，需兜底为空对象，避免 Object.keys(null) 报错
+        prevProps = prevProps || {};
+        nextProps = nextProps || {};
+        const nextKeys = Object.keys(nextProps);
+        // 如果新旧 props 的数量变了，则说明有变化
+        if (nextKeys.length !== Object.keys(prevProps).length) {
+          return true;
+        }
+
+        for (let i = 0; i < nextKeys.length; i++) {
+          const key = nextKeys[i];
+          // 有不想等的属性，说明有变化
+          if (nextProps[key] !== prevProps[key]) {
+            return true;
+          }
+        }
+        // 所有属性都相等，说明没有变化
+        return false;
+      }
+
+      function normalizeClass(value) {
+        let res = "";
+        // 字符串：直接使用
+        if (typeof value === "string") {
+          res = value;
+        } else if (Array.isArray(value)) {
+          // 数组：递归处理每一项，非空的拼接起来
+          for (let i = 0; i < value.length; i++) {
+            const normalized = normalizeClass(value[i]);
+            if (normalized) {
+              res += normalized + " ";
+            }
+          }
+        } else if (value !== null && typeof value === "object") {
+          // 对象：值为真值的 key 才保留
+          for (const name in value) {
+            if (value[name]) {
+              res += name + " ";
+            }
+          }
+        }
+        return res.trim();
+      }
+      // 渲染 container 是挂载的容器
+      function render(vnode, container) {
+        console.log("vnode", vnode);
+        if (vnode) {
+          // 新的vnode存在,就将其与旧vnode一起传给patch函数，进行打补丁
+          patch(container._vnode, vnode, container);
+        } else {
+          if (container._vnode) {
+            unmount(container._vnode);
+          }
+        }
+        container._vnode = vnode; // 更新容器的_vnode属性，记录当前渲染的vnode
+      }
+      return { render, normalizeClass };
+    }
+
+    const renderer = createRenderer({
+      // 用来创建元素
+      createElement(tag) {
+        return document.createElement(tag);
+      },
+      // 用来设置元素的文本内容
+      setElementText(el, text) {
+        el.textContent = text;
+      },
+
+      insert(el, parent, anchor = null) {
+        parent.insertBefore(el, anchor);
+      },
+      createTextNode(text) {
+        return document.createTextNode(text);
+      },
+      setText(el, text) {
+        el.nodeValue = text;
+      },
+      createCommentNode(text) {
+        return document.createComment(text);
+      },
+    });
+    // 全局变量 当前正在被初始化的实例
+    let currentInstance = null;
+    function setCurrentInstance(instance) {
+      currentInstance = instance;
+    }
+
+    function getCurrentInstance() {
+      return currentInstance;
+    }
+
+    function onMounted(fn) {
+      const instance = getCurrentInstance();
+      if (instance) {
+        // 将生命周期函数添加到数组中
+        instance.mounted.push(fn);
+      } else {
+        console.error("onMounted 只能用于 setup 中调用的函数");
+      }
+    }
+
+    function onUnmounted(fn) {
+      const instance = getCurrentInstance();
+      if (instance) {
+        // 将生命周期函数添加到数组中
+        instance.onunmounted.push(fn);
+      } else {
+        console.error("onUnmounted 只能用于 setup 中调用的函数");
+      }
+    }
+
+    // 定义异步组件,是一个高阶函数，它的返回值是一个一个包装函数 指定出错渲染组件
+    function defineAsyncComponent(options) {
+      // 使用一个变量来存储异步组件的实例
+
+      if (typeof options === "function") {
+        // 如果是函数，就将其作为 loader 属性
+        options = {
+          loader: options,
+        };
+      }
+
+      const { loader } = options;
+
+      let InnerComp = null;
+      // 返回一个包装组件
+      return {
+        name: "AsyncComponentWrapper",
+        data() {
+          return {};
+        },
+        props: {},
+        setup(props, { emit }) {
+          const loaded = ref(false); // 判断异步组件是否加载完成
+          const timeout = ref(false); // 判断异步组件是否超时
+          const loading = ref(false); // 判断异步组件是否正在加载
+
+          // 定义error，因为加载error是异步的，所以需要使用shallowRef来同步更新组件
+          const error = shallowRef(null);
+          let loadingTime = null;
+          let timer = null;
+
+          if (options.delay) {
+            loadingTime = setTimeout(() => {
+              loading.value = true;
+            }, options.delay);
+          } else {
+            loading.value = true;
+          }
+
+          // 执行加载函数
+          loader()
+            .then((component) => {
+              InnerComp = component;
+              loaded.value = true;
+            })
+            .catch((err) => {
+              error.value = err;
+            })
+            .finally(() => {
+              loading.value = false;
+              clearTimeout(loadingTime);
+            });
+
+          if (options.timeout) {
+            timer = setTimeout(() => {
+              const err = new Error("AsyncComponent timeout ");
+              error.value = err;
+              timeout.value = true;
+            }, options.timeout);
+          }
+          // 卸载的时候清除定时器，避免内存泄漏
+          onUnmounted(() => {
+            if (timer) {
+              clearTimeout(timer);
+            }
+          });
+
+          const placeholder = {
+            type: Text,
+            children: "加载中...",
+          };
+
+          return () => {
+            if (loaded.value) {
+              return {
+                type: InnerComp,
+              };
+            } else if (timeout.value) {
+              return options.errorComponent
+                ? options.errorComponent
+                : placeholder;
+            } else if (loading.value) {
+              return options.loadingComponent
+                ? options.loadingComponent
+                : placeholder;
+            }
+            return placeholder;
+          };
+        },
+      };
+      //  return loader;
+    }
+
+    // 定义keepAlive组件
+    const KeepAlive = {
+      // keepAlive组件独有的属性，用来做标识
+      _isKeepAlive: true, //用来keepalive的组件标识
+      props: {
+        include: RegExp,
+        exclude: RegExp,
+      },
+      setup(props, { emit, slots }) {
+        // 创建一个缓存对象
+        // key: vnode.type,
+        // value: vnode,
+        const cache = new Map();
+
+        // 当前keepAlive组件的实例
+        const instance = getCurrentInstance();
+        // 对于keepAlive组件 他的实例上存在特殊的keepAliveCtx 对象， 该对象由渲染器注入
+        // 该对象会暴露渲染器中的一些方法，其中mone函数 用来将一段DOM移动到另外一个容器中
+
+        const { move, createElement } = instance.keepAliveCtx;
+
+        // 创建隐藏容器
+        const storageContainer = createElement("div");
+
+        // keepAlive 会增加两个内部函数。分别是_deactivate 和_activate
+
+        // 这两个函数会在渲染器中调用
+        instance._deActivate = () => {
+          move(storageContainer, null);
+        };
+
+        instance._activate = (vnode) => {
+          move(storageContainer, vnode);
+        };
+
+        return () => {
+          // keepAlive 的默认插槽就是要被KeepAlive组件缓存起来的组件
+
+          const rawNode = slots.default?.();
+
+          console.log("rawNode", rawNode);
+
+          // 如果不是组件， 直接渲染就可以了，因为非组件的虚拟节点无法被keepAlive组件缓存起来
+          if (typeof rawNode?.type !== "object") {
+            return rawNode;
+          }
+
+          const name = rawNode.type.name;
+
+          // 对name进行匹配 如果name不在include中， 或者在exclude中， 就直接渲染组件
+          if (
+            (props.include && !props.include.test(name)) ||
+            (props.exclude && props.exclude.test(name))
+          ) {
+            return rawNode;
+          }
+
+          // 使用组件选项对象rawNode.type 作为键， 从缓存中获取组件
+          const cachedVnode = cache.get(rawNode.type);
+
+          // 如果缓存中存在， 就直接渲染缓存中的组件
+          if (cachedVnode) {
+            // 如果有缓存的内容，说明不是挂载，而是激活
+            rawNode.component = cachedVnode.component;
+            rawNode.keepAlive = true;
+          } else {
+            // 如果没有缓存，则将其加入缓存内容。 如果缓存一直存在 会一直增加。对内存不友好， 所以要控制缓存的大小
+            cache.set(rawNode.type, rawNode);
+          }
+
+          // 在组件的vnode中添加shouldKaapAlive属性，防止真的卸载
+          rawNode.shouldKeepAlive = true;
+          rawNode.keepAliveInstance = instance;
+          return rawNode;
+        };
+
+        // instance.keepAliveCache = cache;
+      },
+      // type: "keepAlive",
+    };
+
+    // 注释节点
+    // 用来表示注释节点的类型
+    const Comment = Symbol();
+    // 用来表示文本节点的类型
+    const Text = Symbol();
+    // 用来表示Fragment组件的类型
+    const Fragment = Symbol();
+
+    // 定义一个异步组件：1 秒后加载完成
+    const AsyncComp = defineAsyncComponent(() => {
+      return new Promise((resolve) => {
+        setTimeout(() => {
+          resolve({
+            name: "AsyncInner",
+            data() {
+              return {};
+            },
+            props: {},
+            render() {
+              return {
+                type: "div",
+                children: "异步组件加载成功!",
+              };
+            },
+          });
+        }, 1000);
+      });
+    });
+
+    const AsyncCompObj = defineAsyncComponent({
+      loader: () => {
+        return new Promise((resolve) => {
+          setTimeout(() => {
+            resolve({
+              name: "AsyncInner",
+              data() {
+                return {};
+              },
+              props: {},
+              render() {
+                return {
+                  type: "div",
+                  children: "异步组件加载成功2222!",
+                };
+              },
+            });
+          }, 1000);
+        });
+      },
+      delay: 2000,
+      errorComponent: {
+        name: "AsyncError",
+        data() {
+          return {};
+        },
+        props: {},
+        render() {
+          return {
+            type: "div",
+            children: "异步组件加载失败!",
+          };
+        },
+      },
+      loadingComponent: {
+        setup() {
+          return {
+            type: Text,
+            children: "加载中...",
+          };
+        },
+      },
+    });
+
+    function MyFunction(props) {
+      return {
+        type: "h2",
+        children: `这是一个函数组件 ${props.title}`,
+      };
+    }
+
+    const Teleport = {
+      _isTeleport: true,
+      process(oldVnode, newVnode, container, anchor, internals) {
+        // internals 是一个对象， 用来获取内部函数
+
+        const { patch, patchChildren } = internals;
+
+        if (!oldVnode) {
+          // 获取容器的，即挂载父节点
+          const target =
+            typeof newVnode.props.to === "string"
+              ? document.querySelector(newVnode.props.to)
+              : newVnode.props.to;
+          newVnode.children.forEach((child) => {
+            patch(child, target, anchor);
+          });
+        } else {
+          // 调用渲染器的patch函数， 渲染新的虚拟节点
+          patchChildren(newVnode, container, anchor);
+          // 如果to 值不同，需要对内容进行移动
+          if (oldVnode.props.to !== newVnode.props.to) {
+            // 如果to属性不同， 就需要将旧的虚拟节点从容器中移除
+
+            // 获取新的target
+            const target =
+              typeof newVnode.props.to === "string"
+                ? document.querySelector(newVnode.props.to)
+                : newVnode.props.to;
+
+            newVnode.children.forEach((child) => {
+              move(child, target);
+            });
+          }
+        }
+      },
+    };
+
+    const Transition = {
+      name: "Transition",
+      setup(props, { slots }) {
+        // 获取插槽中需要过度的内容
+
+        const innerVnode = slots.default();
+
+        // 在过渡元素vnode中增加transition 的钩子函数
+        innerVnode.transition = {
+          beforeEnter(el) {
+            el.classList.add("enter-enter-from");
+            el.classList.remove("enter-enter-active");
+          },
+          enter() {},
+          beforeLeave() {
+            console.log("beforeLeave");
+          },
+          leave() {
+            console.log("leave");
+          },
+        };
+
+        return innerVnode;
+      },
+    };
+
+    const Mycomponent = {
+      name: "Mycomponent",
+      setup(props, { emit }) {
+        onMounted(() => {
+          console.log("传入的 onMounted");
+        });
+        return {
+          title: props.title,
+          onClickParate: () => {
+            emit("ClickParate");
+          },
+          onChildClick: () => {
+            console.log("click emit");
+          },
+        };
+      },
+      // 组件定义 props
+      props: {
+        title: {
+          type: String,
+          default: "default1212",
+        },
+      },
+      beforeCreated() {
+        console.log("beforeCreated");
+      },
+      created() {
+        console.log("created");
+      },
+      beforeMount() {
+        console.log("beforeMount");
+      },
+      beforeUpdate() {
+        console.log("beforeUpdate", this.title);
+      },
+      updated() {
+        console.log("updated");
+      },
+      beforeUnmount() {
+        console.log("beforeUnmount");
+      },
+      data() {
+        return {
+          foot: "hellow word Mycomponent",
+        };
+      },
+      // 返回虚拟 DOM
+      render() {
+        return {
+          type: "div",
+          children: [
+            {
+              type: "h2",
+              children: `${this.foot} foot 的值 ${this.title}`,
+            },
+          ],
+          props: {
+            onClick: [this.onClickParate, this.onChildClick],
+          },
+        };
+      },
+    };
+    const vnode = {
+      type: "div",
+      props: {
+        id: "foo",
+        class: renderer.normalizeClass(["red", "bar"]),
+        oncontextmenu: () => {
+          console.log("contextmenu");
+        },
+      },
+      children: [
+        {
+          type: "h2",
+          key: "h1",
+          children: "hello vue",
+        },
+        {
+          type: "h1",
+          children: "hello vue",
+        },
+        {
+          type: Comment,
+          children: "这是一个注释节点",
+        },
+        {
+          type: Text,
+          children: "这是一个文本节点",
+        },
+        {
+          type: Mycomponent,
+          children: {
+            header() {
+              return {
+                type: "h2",
+                children: "其实slot是一个插槽",
+              };
+            },
+            children() {
+              return {
+                type: "h2",
+                children: "其实slot是一个插槽children",
+              };
+            },
+            footer() {
+              return {
+                type: "h2",
+                children: "其实slot是一个插槽footer",
+              };
+            },
+          },
+          // 来自父组件的 props
+          props: {
+            title: "hello vue",
+            // 传递过来的事件处理函数
+            onClickParate: () => {
+              console.log("click emit");
+            },
+            onChildClick: () => {
+              console.log("click emit child");
+            },
+          },
+        },
+
+        {
+          type: "ul",
+          children: [
+            {
+              type: Fragment,
+              children: [
+                {
+                  type: "li",
+                  key: "li1",
+                  children: "这是一个Fragment组件节点的li1节点",
+                },
+                {
+                  type: "li",
+                  key: "li2",
+                  children: "这是一个Fragment组件节点的li2节点",
+                },
+                {
+                  type: "li",
+                  key: "li3",
+                  children: "这是一个Fragment组件节点的li3节点",
+                },
+              ],
+            },
+          ],
+        },
+        {
+          type: AsyncComp,
+        },
+        {
+          type: AsyncCompObj,
+        },
+        {
+          type: KeepAlive,
+          children: {
+            default() {
+              return {
+                type: "h2",
+                children: "这是一个keepAlive组件节点的h2节点",
+              };
+            },
+          },
+        },
+        {
+          type: MyFunction,
+          props: {
+            title: "函数组件",
+          },
+        },
+      ],
+    };
+
+    effect(() => renderer.render(vnode, document.getElementById("app")));
+
+    // setTimeout(() => {
+    //   count.value = 1000;
+    // }, 1000);
+  </script>
+</html>
+
+<!-- 
+ render: 是渲染，是动词 
+ renderer是渲染器是名词，作用是将虚拟dom渲染成各个平台的真实dom的
+ 挂载：将虚拟dom挂载到真实dom上的过程
+ Fgrament: 是vue3新增加的VNode类型，用来表示Fragment组件 
+ keepAlive: 是vue3新增加的VNode类型，用来表示keepAlive组件 用来缓存组件的
+
+
+-->

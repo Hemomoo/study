@@ -1,0 +1,16 @@
+{
+  "name": "es6-playground",
+  "version": "1.0.0",
+  "description": "ES6 与 Vue 响应式原理学习练习",
+  "type": "module",
+  "scripts": {
+    "vue:cleanup": "node vue-cleanup.js",
+    "vue:respond": "node vue-respond.js",
+    "vue:scheduler": "node vue-scheduler.js",
+    "circular": "node commonjs-ciruclat.js",
+    "generate": "node generate.js"
+  },
+  "dependencies": {
+    "vue": "^3.5.44"
+  }
+}
